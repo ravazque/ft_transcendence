@@ -1,8 +1,85 @@
+# ─────────────────────────────────────────────────────────────────────
+# Docker Compose — Service orchestration
+#
+# Services:
+#   nginx      - Reverse proxy + WAF (ModSecurity / OWASP CRS)
+#   fullstack  - Nuxt 4 (SSR frontend + API server routes)
+#   db         - PostgreSQL 17 (primary database, network-isolated)
+#   redis      - Session cache, rate limiting
+#   directus   - Headless CMS (future content management)
+#
+# Networks:
+#   proxy_net - nginx <-> fullstack (HTTP traffic)
+#   data_net  - fullstack <-> db, redis, directus (internal, no internet egress)
+# ─────────────────────────────────────────────────────────────────────
+
 services:
-  # ── PostgreSQL Database ──
+
+  # ── Nginx + ModSecurity WAF ──────────────────────────────────────
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: transcendence_nginx
+    restart: unless-stopped
+    ports:
+      - "${NGINX_HTTPS_PORT:-443}:443"
+      - "${NGINX_HTTP_PORT:-80}:80"
+    volumes:
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    environment:
+      MODSEC_RULE_ENGINE: "${MODSEC_RULE_ENGINE:-On}"
+      PARANOIA: "${WAF_PARANOIA:-1}"
+      ANOMALY_INBOUND: "5"
+      ANOMALY_OUTBOUND: "4"
+    depends_on:
+      fullstack:
+        condition: service_healthy
+    networks:
+      - proxy_net
+
+  # ── Fullstack: Nuxt 4 (SSR + API) ──────────────────────────────
+  # Single container serving frontend (SSR) and backend (server routes).
+  # SSR calls to /api are in-process — no cross-container HTTP hop,
+  # which eliminates first-load latency and SSR fetch failures.
+  fullstack:
+    build:
+      context: ./fullstack
+      dockerfile: Dockerfile
+    container_name: transcendence_fullstack
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRATION: ${JWT_EXPIRATION:-24h}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      DIRECTUS_URL: http://directus:8055
+      NODE_ENV: ${NODE_ENV:-development}
+    volumes:
+      - ./fullstack:/app
+      - /app/node_modules
+      - /app/.nuxt
+      - /app/.output
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - proxy_net
+      - data_net
+
+  # ── PostgreSQL ───────────────────────────────────────────────────
   db:
-    image: postgres:16-alpine
-    container_name: ft_db
+    image: postgres:17-bookworm
+    container_name: transcendence_db
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -11,76 +88,84 @@ services:
     volumes:
       - db_data:/var/lib/postgresql/data
       - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
-    ports:
-      - "5432:5432"
-    networks:
-      - backend_net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - data_net
 
-  # ── NestJS Backend ──
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: ft_backend
+  # ── Redis ────────────────────────────────────────────────────────
+  redis:
+    image: redis:7.4-bookworm
+    container_name: transcendence_redis
+    restart: unless-stopped
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - redis_data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - data_net
+
+  # ── Directus CMS ────────────────────────────────────────────────
+  # Headless CMS for managing content, media and assets.
+  # Admin panel at http://directus:8055 (internal) or via nginx proxy.
+  directus:
+    image: directus/directus:11
+    container_name: transcendence_directus
     restart: unless-stopped
     environment:
-      DATABASE_URL: ${DATABASE_URL}
-      JWT_SECRET: ${JWT_SECRET}
-      JWT_EXPIRATION: ${JWT_EXPIRATION}
-      NODE_ENV: ${NODE_ENV}
+      SECRET: ${DIRECTUS_SECRET:-directus-dev-secret-change-in-production}
+      DB_CLIENT: pg
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_DATABASE: ${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      ADMIN_EMAIL: ${DIRECTUS_ADMIN_EMAIL:-admin@transcendence.local}
+      ADMIN_PASSWORD: ${DIRECTUS_ADMIN_PASSWORD:-admin}
+      CACHE_ENABLED: "true"
+      CACHE_STORE: redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      PUBLIC_URL: ${DIRECTUS_PUBLIC_URL:-https://localhost/cms}
     volumes:
-      - ./backend:/app
-      - /app/node_modules
+      - directus_uploads:/directus/uploads
+      - directus_extensions:/directus/extensions
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8055/server/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     networks:
-      - backend_net
-      - frontend_net
-
-  # ── React Frontend ──
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: ft_frontend
-    restart: unless-stopped
-    environment:
-      VITE_API_URL: ${VITE_API_URL}
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-    depends_on:
-      - backend
-    networks:
-      - frontend_net
-
-  # ── Nginx Reverse Proxy ──
-  nginx:
-    image: nginx:alpine
-    container_name: ft_nginx
-    restart: unless-stopped
-    ports:
-      - "443:443"
-      - "80:80"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/ssl:/etc/nginx/ssl:ro
-    depends_on:
-      - frontend
-      - backend
-    networks:
-      - frontend_net
-      - backend_net
+      - proxy_net
+      - data_net
 
 volumes:
   db_data:
+    name: transcendence_db_data
+  redis_data:
+    name: transcendence_redis_data
+  directus_uploads:
+    name: transcendence_directus_uploads
+  directus_extensions:
+    name: transcendence_directus_extensions
 
 networks:
-  frontend_net:
-  backend_net:
+  proxy_net:
+    name: transcendence_proxy
+  data_net:
+    name: transcendence_data
+    internal: true

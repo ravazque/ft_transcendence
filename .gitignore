@@ -1,37 +1,46 @@
-# Dependencies
+# ═══════════════════════════════════════════════════════════════════════
+# .gitignore
+# ═══════════════════════════════════════════════════════════════════════
+
+# ── Dependencies ──
 node_modules/
 
-# Build output
-frontend/dist/
-backend/dist/
+# ── Build output ──
+fullstack/.nuxt/
+fullstack/.output/
+fullstack/dist/
 
-# Environment variables
+# ── Environment variables (contain secrets) ──
 .env
 .env.local
 .env.*.local
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-npm-debug.log*
-
-# SSL certificates (generated locally)
+# ── SSL certificates (generated locally, never commit private keys) ──
 nginx/ssl/*.pem
 nginx/ssl/*.key
 nginx/ssl/*.crt
 
-# Prisma migrations
-backend/prisma/migrations/
+# ── IDE / Editor ──
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+*~
 
-# Docker
+# ── OS ──
+.DS_Store
+Thumbs.db
+
+# ── Logs ──
+*.log
+npm-debug.log*
+
+# ── Prisma migrations (generated per developer) ──
+fullstack/prisma/migrations/
+
+# ── Local Docker overrides ──
 docker-compose.override.yml
+
+# ── Others ──
+docs/private.md
