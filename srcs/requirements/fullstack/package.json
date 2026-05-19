@@ -1,0 +1,54 @@
+{
+  "name": "yoga-fullstack",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev --host 0.0.0.0",
+    "build": "nuxt build",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy",
+    "prisma:generate": "prisma generate",
+    "prisma:studio": "prisma studio",
+    "prisma:seed": "prisma db seed",
+    "test:users": "tsx prisma/test-users.ts"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@nuxt/ui": "^4.6.0",
+    "@prisma/client": "^5.22.0",
+    "argon2": "^0.44.0",
+    "ioredis": "^5.6.1",
+    "jsonwebtoken": "^9.0.2",
+    "nodemailer": "^8.0.7",
+    "nuxt": "^4.4.2",
+    "nuxt-security": "^2.2.0",
+    "otplib": "^13.0.0",
+    "qrcode": "^1.5.4",
+    "stripe": "^17.7.0",
+    "tailwindcss": "^4.2.2",
+    "vue": "^3.5.30",
+    "vue-router": "^5.0.4",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@iconify-json/heroicons": "^1.2.3",
+    "@iconify-json/lucide": "^1.2.105",
+    "@iconify-json/ph": "^1.2.2",
+    "@types/jsonwebtoken": "^9.0.9",
+    "@types/nodemailer": "^6.4.17",
+    "@types/qrcode": "^1.5.5",
+    "prisma": "^5.22.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.0"
+  },
+  "overrides": {
+    "postcss-normalize-positions": "7.0.1",
+    "postcss-normalize-repeat-style": "7.0.1",
+    "commander": "13.1.0"
+  }
+}

@@ -1,0 +1,14 @@
+# Keep the build context small: these are either reproduced inside the image
+# (node_modules, .nuxt, .output) or irrelevant for the build.
+node_modules
+.nuxt
+.output
+dist
+.git
+.gitignore
+*.log
+npm-debug.log*
+.env
+.env.*
+Dockerfile
+.dockerignore

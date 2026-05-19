@@ -1,0 +1,192 @@
+@import "tailwindcss";
+@import "@nuxt/ui";
+
+/* *{
+  border: 1px tomato solid
+} */
+
+@theme {
+  --ui-radius: 0.75rem;
+
+  /* Font Families */
+  --font-roboto: "Roboto", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Roboto Serif", ui-serif, Georgia, serif;
+
+  /* Color Palette - Industry Naming */
+  --color-brand-black: #231F20;
+  --color-brand-white: #FFFFFF;
+  --color-brand-grey-dark: #8C7F73;
+  --color-brand-grey-light: #CFC8B7;
+  --color-brand-green: #59612D;
+  --color-brand-brown: #7C6E3E;
+  --color-brand-mustard: #C78C12;
+  --color-brand-orange: #BB5420;
+  --color-brand-teal: #58A2A6;
+  --color-brand-yellow: #F1D6A0;
+  --color-brand-cream: #FBF9EA;
+
+  /* Danger / borrado de cuenta. Rojo suave, cercano al tono terracota
+     de la marca para no chocar con la paleta cálida. */
+  --color-brand-danger:        #E08585;   /* fondo principal */
+  --color-brand-danger-soft:   #EDA8A8;   /* tonalidad clara para insets */
+  --color-brand-danger-dark:   #C76A6A;   /* hover / acentos */
+  --color-brand-danger-ink:    #7A2E2E;   /* texto sobre fondo blanco */
+
+  /* Nuxt UI Overrides */
+  --ui-color-primary: var(--color-brand-mustard);
+  --ui-color-neutral: var(--color-brand-grey-dark);
+  /* Custom Header Theme Variables */
+  --header-shadow-color: var(--color-brand-green);
+}
+
+@layer base {
+  html {
+    @apply bg-brand-cream;
+    /* No global `scroll-behavior: smooth`. With smooth-scroll on the
+       document, every programmatic scroll (route changes, savedPosition
+       restores) animated for ~300 ms while the cross-fade was already
+       running — that is what produced the "stays at previous scroll
+       then jumps to top" flicker the user reported. Smooth scrolling
+       is kept opt-in via Vue Router's scrollBehavior for anchor
+       targets (`/#metodo` from the footer) inside router.options.ts. */
+    /* Keep the anchor offset so anchor scrolls do not hide under the
+       fixed header. */
+    scroll-padding-top: 5rem;
+  }
+
+  body {
+    @apply bg-brand-cream text-brand-grey-dark;
+    margin: 0;
+    padding: 0;
+  }
+  
+  /* Márgenes globales para secciones (.layout-container) */
+  .layout-container {
+    @apply px-6 md:px-8 lg:px-28;
+  }
+
+  /* Espaciado vertical para bloques raíz en móvil */
+  main > * {
+    @apply mt-10 mb-0 md:my-0;
+  }
+  main > *:first-child {
+    @apply mt-0;
+  }
+  main > *:last-child {
+    @apply mb-0;
+  }
+  
+  /* Typography Scale */
+  h1 {
+    @apply font-serif text-[4.5rem] font-bold leading-tight text-brand-black;
+  }
+  h2 {
+    @apply font-serif text-[3rem] font-bold leading-tight text-brand-black;
+  }
+  h3 {
+    @apply font-serif text-[2.25rem] font-bold leading-snug text-brand-black;
+  }
+  h4 {
+    @apply font-serif text-[1.5rem] font-semibold leading-snug text-brand-black;
+  }
+  h5 {
+    @apply font-roboto text-[1rem] font-semibold text-brand-black;
+  }
+  p, body {
+    @apply font-roboto text-[1rem] font-normal text-brand-grey-dark;
+  }
+  
+  /* Utilities for other types */
+  .text-sm {
+    @apply font-roboto text-[0.875rem] font-normal;
+  }
+  .text-xs {
+    @apply font-roboto text-[0.75rem] font-normal;
+  }
+  .text-2xs {
+    @apply font-roboto text-[0.625rem] font-semibold uppercase tracking-wider;
+  }
+
+  /* Ocultar texto de accesibilidad residual del Stepper y sus números */
+  [role="status"] {
+    display: none !important;
+  }
+  [data-slot="indicator"] {
+    color: transparent !important;
+  }
+
+  /* Reseñas de usuarios — pueden contener palabras larguísimas sin
+     espacios. Forzamos que la palabra se rompa antes de salirse del
+     card e insertamos guión silábico cuando el browser puede. */
+  .review-text {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    hyphens: auto;
+    -webkit-hyphens: auto;
+  }
+}
+
+/* Global page transition (Nuxt pageTransition='page'). Pure cross-fade
+   on opacity only — no transform — to avoid any visual jump between
+   pages with different first-paint layouts (home → profile, etc.). The
+   leaving page hangs around briefly while the entering one fades in. */
+.page-enter-active,
+.page-leave-active {
+  transition: opacity 280ms ease;
+}
+.page-enter-from,
+.page-leave-to {
+  opacity: 0;
+}
+
+/* In-module progress bar: simple cross-fade aligned with the global
+   page transition. The progress block is centred via absolute
+   positioning + translate(-50%, -50%); we keep that transform on the
+   enter/leave states and only animate opacity so the bar grows in
+   place rather than sliding under the nav cluster. */
+.header-progress-enter-active,
+.header-progress-leave-active {
+  transition: opacity 320ms ease 120ms;
+}
+.header-progress-enter-from,
+.header-progress-leave-to {
+  opacity: 0;
+}
+
+/* ── Micro-interacciones de hover ── */
+.hover-lift {
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+.hover-lift:hover {
+  transform: translateY(-1px);
+}
+
+.card-hover {
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+.card-hover:hover {
+  transform: scale(1.02);
+}
+
+/* ── Aparición escalonada de cards ── */
+.stagger-fade {
+  animation: stagger-fade-in 280ms ease both;
+}
+@keyframes stagger-fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Respect users that prefer reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .page-enter-active,
+  .page-leave-active,
+  .header-progress-enter-active,
+  .header-progress-leave-active,
+  .hover-lift,
+  .card-hover,
+  .stagger-fade {
+    transition: none !important;
+    animation: none !important;
+  }
+}

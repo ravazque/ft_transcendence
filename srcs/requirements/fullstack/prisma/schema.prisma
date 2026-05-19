@@ -1,0 +1,423 @@
+// Prisma schema — application data model.
+//
+// Product data model: Module (course) contains Class (lessons).
+// Resources are linked to classes (external videos, PDFs, bibliography).
+// Orders and Purchases record payments via Stripe Checkout.
+//
+// Hybrid IDs: User/Session/UserRegistration use UUID (no enumeration) —
+// better for auth. The rest of the domain (Module, Class, Order…) uses
+// INT autoincrement, aligned with the client's SQL dump.
+//
+// The physical schema is initialised from requirements/database/init.sql
+// the first time the Postgres volume is created. After that this file
+// is the single source — `prisma db push` runs on fullstack container
+// startup and reconciles any divergence. Keep this schema and init.sql
+// in sync (same types, same limits).
+//
+// Multi-locale (en_en, es_es, fr_fr). Editorial content is duplicated
+// per locale inside the same tables; endpoints filter by ?locale=.
+//
+// price and *_cents in cents (INT) — Stripe convention, no floats.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Enums ──
+
+enum UserRole {
+  admin   // Marco — content management and global operations
+  editor  // CMS content management without admin privileges
+  user    // Default role on signup
+
+  @@map("user_role")
+}
+
+enum Locale {
+  en_en
+  es_es
+  fr_fr
+
+  @@map("locale_code")
+}
+
+enum OrderStatus {
+  pending
+  paid
+  failed
+
+  @@map("order_status")
+}
+
+enum DiscountType {
+  percent
+  amount
+
+  @@map("discount_types")
+}
+
+enum DiscountScope {
+  all
+  modules
+
+  @@map("discount_scope_types")
+}
+
+enum ResourceType {
+  external_url
+  bibliography_entry
+  aditional_note
+  pdf
+
+  @@map("resource_types")
+}
+
+enum CalendarEventKind {
+  live
+  in_person
+
+  @@map("calendar_event_kind")
+}
+
+// ── Users ──
+// password almacena el hash Argon2id — nunca plaintext.
+// totpSecret guarda la semilla TOTP (otplib); null hasta enrolar 2FA.
+// stripeCustomerId enlaza con el Customer de Stripe para historial.
+model User {
+  id               String   @id @default(uuid()) @db.Uuid
+  username         String   @unique @db.VarChar(16)
+  email            String   @unique @db.VarChar(255)
+  password         String   @db.VarChar(255)
+  fullName         String?  @map("full_name") @db.VarChar(255)
+  avatar           String?  @map("avatar_url") @db.VarChar(255)
+  preferredLocale  Locale   @default(en_en) @map("preferred_locale")
+  role             UserRole @default(user)
+  totpSecret       String?  @map("totp_secret") @db.VarChar(255)
+  totpEnabled      Boolean  @default(false) @map("totp_enabled")
+  emailVerified    Boolean  @default(false) @map("email_verified")
+  stripeCustomerId String?  @map("stripe_customer_id") @db.VarChar(255)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  sessions      Session[]
+  purchases     Purchase[]
+  orders        Order[]
+  comments      UserComment[]
+  registrations UserRegistration[]
+  reviews       UserReview[]
+
+  @@map("users")
+}
+
+// ── Sessions ──
+// Reserved for refresh-token rotation. Today the cookie JWT is the
+// only active token; once rotation is added, each row will be a
+// revocable refresh token.
+model Session {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  token     String   @unique @db.VarChar(512)
+  expiresAt DateTime @map("expires_at") @db.Timestamp(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+// ── User registrations ──
+// Single-use tokens for email verification and password reset. Each
+// row is deleted after the matching worker consumes it.
+model UserRegistration {
+  userId         String   @map("user_id") @db.Uuid
+  registrationId String   @id @map("registration_id") @db.Uuid
+  expiryDate     DateTime @map("expiry_date") @db.Timestamp(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_registrations")
+}
+
+// ── Modules ──
+// Sellable unit. price in cents at the Stripe layer; here we store the
+// decimal price shown to the user. stripeProductId / stripePriceId
+// link to Stripe. isFullCourse marks the "Full Access" bundle.
+model Module {
+  id               Int      @id @default(autoincrement())
+  locale           Locale
+  slug             String   @db.VarChar(255)
+  cover            String?  @db.VarChar(255)
+  title            String   @db.VarChar(255)
+  shortDescription String?  @map("short_description") @db.VarChar(255)
+  fullDescription  String?  @map("full_description")
+  keyConcepts      String?  @map("key_concepts")
+  isFullCourse     Boolean  @default(false) @map("is_full_course")
+  price            Decimal  @db.Decimal(6, 2)
+  published        Boolean  @default(true)
+  stripeProductId  String?  @map("stripe_product_id") @db.VarChar(255)
+  stripePriceId    String?  @map("stripe_price_id") @db.VarChar(255)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  classes   Class[]
+  purchases Purchase[]
+
+  @@unique([locale, slug])
+  @@map("modules")
+}
+
+// ── Classes ──
+// Lessons inside a module. moduleLevel orders the classes inside the
+// module (1..N) and is used to compute the user's progress.
+// vimeoVideoId is the canonical playback source; videoUrl remains as a
+// legacy fallback (free preview clips not hosted on Vimeo). Both are
+// nullable but at least one must be set — the playback endpoint
+// prefers vimeoVideoId when both are present.
+model Class {
+  id               Int      @id @default(autoincrement())
+  moduleId         Int      @map("module_id")
+  locale           Locale
+  moduleLevel      Int      @map("module_level")
+  title            String   @db.VarChar(255)
+  cover            String?  @db.VarChar(255)
+  shortDescription String?  @map("short_description") @db.VarChar(255)
+  fullDescription  String?  @map("full_description")
+  keyConcepts      String?  @map("key_concepts")
+  videoUrl         String?  @map("video_url") @db.VarChar(255)
+  vimeoVideoId     String?  @map("vimeo_video_id") @db.VarChar(64)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  module    Module          @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  resources ClassResource[]
+  comments  UserComment[]
+
+  @@unique([moduleId, moduleLevel, locale])
+  @@map("classes")
+}
+
+// ── Resources ──
+// Resources shareable between classes (PDFs, links, bibliography, notes).
+model Resource {
+  id       Int          @id @default(autoincrement())
+  type     ResourceType
+  contents String       @db.Text
+
+  classes ClassResource[]
+
+  @@map("resources")
+}
+
+model ClassResource {
+  classId    Int @map("class_id")
+  resourceId Int @map("resource_id")
+
+  class    Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
+  resource Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+
+  @@id([classId, resourceId])
+  @@map("class_resources")
+}
+
+// ── Discounts ──
+// Coupons also managed from Stripe (stripeCouponId / promotionCodeId).
+model Discount {
+  id                     Int           @id @default(autoincrement())
+  code                   String        @unique @db.VarChar(255)
+  type                   DiscountType
+  value                  Int
+  scope                  DiscountScope
+  moduleIds              Int[]         @map("module_ids")
+  maxRedemptions         Int?          @map("max_redemptions")
+  redeemBy               DateTime?     @map("redeem_by") @db.Timestamp(6)
+  active                 Boolean       @default(true)
+  stripeCouponId         String?       @map("stripe_coupon_id") @db.VarChar(255)
+  stripePromotionCodeId  String?       @map("stripe_promotion_code_id") @db.VarChar(255)
+  createdAt              DateTime      @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt              DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  @@map("discounts")
+}
+
+// ── Orders ──
+// Result of a Stripe Checkout. An order groups one or more purchases
+// (buying "Full Access" → every module in the same order). userId is
+// UUID per the hybrid model and is NOT unique (a user can have many
+// orders over time).
+// userId is nullable + ON DELETE SET NULL so that an account erasure
+// (GDPR RTBF) can wipe the user while leaving paid orders behind — paid
+// orders must be retained for fiscal obligations (10 years in France).
+// On erasure we also blank customerSnapshot so no personal data remains.
+model Order {
+  id                       Int         @id @default(autoincrement())
+  userId                   String?     @map("user_id") @db.Uuid
+  status                   OrderStatus
+  currency                 String      @default("EUR") @db.VarChar(3)
+  subtotalCents            Int         @map("subtotal_cents")
+  vatCents                 Int         @map("vat_cents")
+  discountCents            Int         @default(0) @map("discount_cents")
+  totalCents               Int         @map("total_cents")
+  vatCountry               String?     @map("vat_country") @db.VarChar(2)
+  promotionCode            String?     @map("promotion_code") @db.VarChar(255)
+  customerSnapshot         Json?       @map("customer_snapshot")
+  stripeCheckoutSessionId  String?     @unique @map("stripe_checkout_session_id") @db.VarChar(255)
+  stripePaymentIntentId    String?     @unique @map("stripe_payment_intent_id") @db.VarChar(255)
+  stripeInvoiceId          String?     @map("stripe_invoice_id") @db.VarChar(255)
+  stripeInvoicePdfUrl      String?     @map("stripe_invoice_pdf_url") @db.VarChar(255)
+  stripeReceiptUrl         String?     @map("stripe_receipt_url") @db.VarChar(255)
+  paidAt                   DateTime?   @map("paid_at") @db.Timestamp(6)
+  createdAt                DateTime    @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt                DateTime    @default(now()) @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  user      User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  purchases Purchase[]
+
+  @@map("orders")
+}
+
+// ── Purchases ──
+// A purchase = one module unlocked for a user after payment.
+// moduleLevel stores the bought level (modules can be sold by level).
+model Purchase {
+  id          Int      @id @default(autoincrement())
+  orderId     Int      @map("order_id")
+  userId      String   @map("user_id") @db.Uuid
+  moduleId    Int      @map("module_id")
+  moduleLevel Int      @default(1) @map("module_level")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+
+  order  Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  module Module @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, moduleId])
+  @@map("purchases")
+}
+
+// ── Static editorial content (multi-locale) ──
+
+model Faq {
+  id       Int    @id @default(autoincrement())
+  locale   Locale
+  question String @db.VarChar(255)
+  answer   String @db.Text
+
+  @@map("faqs")
+}
+
+model HomeReview {
+  id          Int    @id @default(autoincrement())
+  locale      Locale
+  name        String @db.VarChar(255)
+  title       String @db.VarChar(255)
+  imageUrl    String @map("image_url") @db.VarChar(255)
+  description String @db.VarChar(255)
+
+  @@map("home_reviews")
+}
+
+// Lleva id propio (serial) porque Directus no admite PKs compuestas;
+// la unicidad funcional se mantiene en (milestoneDate, locale).
+model CareerMilestone {
+  id            Int      @id @default(autoincrement())
+  milestoneDate DateTime @map("milestone_date") @db.Date
+  locale        Locale
+  title         String   @db.VarChar(255)
+  description   String   @db.VarChar(255)
+
+  @@unique([milestoneDate, locale])
+  @@map("career_milestones")
+}
+
+// tag identifica el bloque (ej. "hero_title"), value el contenido localizado.
+// id serial como PK por el mismo motivo que CareerMilestone (compatibilidad
+// con Directus). Las consultas del backend siguen filtrando por (tag, locale).
+model TaggedInfo {
+  id     Int    @id @default(autoincrement())
+  tag    String @db.VarChar(64)
+  locale Locale
+  value  String @db.Text
+
+  @@unique([tag, locale])
+  @@map("tagged_info")
+}
+
+// Privacy & terms blocks shown on /privacy. One row per (locale,
+// position); `position` drives the display order and `title`/`body`
+// are managed by the admin from Directus. Stored as a dedicated model
+// (instead of a handful of tagged_info entries) so editors see a clean
+// list grouped by locale.
+model PrivacySection {
+  id        Int      @id @default(autoincrement())
+  locale    Locale
+  position  Int
+  title     String   @db.VarChar(255)
+  body      String   @db.Text
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  @@unique([locale, position])
+  @@index([locale, position])
+  @@map("privacy_sections")
+}
+
+// Shared weekly calendar events (live classes + in-person classes).
+// Each event lives on a CONCRETE date — not a recurrence pattern —
+// so the team can edit the schedule for the current or next week
+// without affecting other weeks. The UI shows one week at a time
+// (prev / current / next) and the CRUD endpoints are admin-only.
+model CalendarEvent {
+  id        Int               @id @default(autoincrement())
+  locale    Locale
+  date      DateTime          @db.Date
+  startTime String            @map("start_time") @db.VarChar(5)
+  endTime   String            @map("end_time") @db.VarChar(5)
+  title     String            @db.VarChar(255)
+  kind      CalendarEventKind
+  location  String?           @db.VarChar(255)
+  createdAt DateTime          @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt DateTime          @default(now()) @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  @@index([locale, date])
+  @@map("calendar_events")
+}
+
+// ── User interactions ──
+
+// Reviews written by real users (not the curated `home_reviews`
+// list). One per (user, locale) so the home page stays homogeneous
+// in every language. Content capped at 600 characters so cards keep
+// their visual size.
+model UserReview {
+  id        Int      @id @default(autoincrement())
+  userId    String   @map("user_id") @db.Uuid
+  locale    Locale
+  rating    Int?     @db.SmallInt
+  content   String   @db.VarChar(600)
+  published Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, locale])
+  @@map("user_reviews")
+}
+
+model UserComment {
+  classId   Int      @map("class_id")
+  userId    String   @map("user_id") @db.Uuid
+  comment   String   @db.VarChar(1024)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+
+  class Class @relation(fields: [classId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([classId, userId])
+  @@map("user_comments")
+}

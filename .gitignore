@@ -1,46 +1,67 @@
-# ═══════════════════════════════════════════════════════════════════════
-# .gitignore
-# ═══════════════════════════════════════════════════════════════════════
-
 # ── Dependencies ──
 node_modules/
+.pnp
+.pnp.js
 
 # ── Build output ──
-fullstack/.nuxt/
-fullstack/.output/
-fullstack/dist/
+srcs/requirements/fullstack/.nuxt/
+srcs/requirements/fullstack/.output/
+srcs/requirements/fullstack/dist/
+*.tsbuildinfo
+
+# ── Test / coverage ──
+coverage/
+.nyc_output/
+*.lcov
+
+# ── Cache ──
+.cache/
+.parcel-cache/
+.vite/
+.eslintcache
 
 # ── Environment variables (contain secrets) ──
-.env
-.env.local
-.env.*.local
+srcs/.env
+srcs/.env.local
+srcs/.env.*.local
+srcs/.env.production
+srcs/.env.development
 
 # ── SSL certificates (generated locally, never commit private keys) ──
-nginx/ssl/*.pem
-nginx/ssl/*.key
-nginx/ssl/*.crt
+srcs/requirements/nginx/ssl/*.pem
+srcs/requirements/nginx/ssl/*.key
+srcs/requirements/nginx/ssl/*.crt
+srcs/requirements/nginx/ssl/*.csr
 
 # ── IDE / Editor ──
 .vscode/
 .idea/
-.claude/
 *.swp
 *.swo
 *~
+.history/
 
 # ── OS ──
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # ── Logs ──
 *.log
+logs/
 npm-debug.log*
-
-# ── Prisma migrations (generated per developer) ──
-fullstack/prisma/migrations/
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
 # ── Local Docker overrides ──
-docker-compose.override.yml
+srcs/docker-compose.override.yml
 
-# ── Others ──
-docs/private.md
+# ── Directus bind-mount directories ──
+# Created on first boot by `make setup`. Contents (extensions, snapshots,
+# uploads) are local to each developer and not part of the source tree.
+srcs/requirements/directus/
+
+# ── Prisma local dev artifacts ──
+srcs/requirements/fullstack/prisma/dev.db
+srcs/requirements/fullstack/prisma/dev.db-journal

@@ -1,188 +1,207 @@
 # ═══════════════════════════════════════════════════════════════════════
-# Makefile — ft_transcendence
+# Makefile — Yoga Platform
 #
-# Main targets:
-#   make all        → Install deps, generate SSL, build images, start services
-#   make up         → Start all services
-#   make down       → Stop all services
-#   make logs       → Stream logs from all services
+# Delivery targets:
+#   make all                → generate .env + SSL, build images, start
+#   make up / down          → start / stop services
+#   make restart            → down + up
+#   make status             → docker compose ps
+#   make logs               → stream logs from every service
+#   make logs-fullstack     → stream Nuxt logs only
+#   make seed               → load the editorial catalogue (idempotent)
+#   make test               → insert demo + tester accounts (needs seed)
+#   make preview            → build prod and run it on :3000 without nginx/SSL
+#   make vimeo-check        → smoke-test the Vimeo proxy (IV.9 healthcheck)
+#   make api                → smoke-test the Public API key gate (IV.1)
+#   make directus-snapshot  → save Directus schema to snapshots/
+#   make directus-apply     → load snapshots/ into Directus
+#   make clean              → down + remove volumes (wipes DB)
+#   make fclean             → clean + remove images
+#   make re                 → fclean + all
+#
+# Prerequisites (must be present on the host):
+#   - docker engine 24.x + docker compose plugin v2.x
+#   - openssl (used by `setup` to generate the self-signed certificate)
+#   - make
 # ═══════════════════════════════════════════════════════════════════════
 
-NAME = transcendence
+NAME    = yoga
+SRCS    = srcs
+COMPOSE = docker compose -f $(SRCS)/docker-compose.yml --project-directory $(SRCS)
 
-# Terminal colours
 GREEN  = \033[0;32m
 YELLOW = \033[0;33m
 RED    = \033[0;31m
 BLUE   = \033[0;34m
 RESET  = \033[0m
 
-# ── Entry point ────────────────────────────────────────────────────
-all: deps setup build up
-	@printf "$(GREEN)Platform running at https://localhost$(RESET)\n"
-	@printf "$(BLUE)Directus CMS at https://localhost/cms$(RESET)\n"
+# ── Entry point ─────────────────────────────────────────────────────
+all: setup build up
+	@HTTPS_PORT=$$(grep -E '^NGINX_HTTPS_PORT=' $(SRCS)/.env 2>/dev/null | cut -d= -f2); \
+	HTTPS_PORT=$${HTTPS_PORT:-443}; \
+	printf "$(GREEN)Platform running at https://localhost:$$HTTPS_PORT$(RESET)\n"; \
+	printf "$(BLUE)Directus CMS at https://localhost:$$HTTPS_PORT/cms$(RESET)\n"
 
-# ── System dependencies ────────────────────────────────────────────
-deps:
-	@printf "$(BLUE)═══ Checking system dependencies ═══$(RESET)\n"
-	@IS_WSL=false; \
-	if grep -qi 'microsoft\|WSL' /proc/version 2>/dev/null; then \
-		IS_WSL=true; \
-		printf "$(BLUE)Detected: WSL (Windows Subsystem for Linux)$(RESET)\n"; \
-	fi; \
-	\
-	DISTRO="unknown"; \
-	PKG_MANAGER=""; \
-	if [ -f /etc/os-release ]; then \
-		. /etc/os-release; \
-		DISTRO="$$ID"; \
-		case "$$ID" in \
-			ubuntu|debian|linuxmint|pop|elementary|zorin|kali) \
-				PKG_MANAGER="apt";; \
-			arch|endeavouros|cachyos|manjaro|garuda|artix) \
-				PKG_MANAGER="pacman";; \
-			fedora|nobara) \
-				PKG_MANAGER="dnf";; \
-			*) \
-				if command -v apt-get >/dev/null 2>&1; then \
-					PKG_MANAGER="apt"; \
-				elif command -v pacman >/dev/null 2>&1; then \
-					PKG_MANAGER="pacman"; \
-				fi;; \
-		esac; \
-	fi; \
-	printf "$(BLUE)OS: $$DISTRO ($$PKG_MANAGER)$(RESET)\n"; \
-	\
-	missing=""; \
-	command -v docker >/dev/null 2>&1 || missing="$$missing docker"; \
-	command -v openssl >/dev/null 2>&1 || missing="$$missing openssl"; \
-	if command -v docker >/dev/null 2>&1 && ! docker compose version >/dev/null 2>&1; then \
-		missing="$$missing docker-compose"; \
-	fi; \
-	\
-	if [ -n "$$missing" ]; then \
-		printf "$(YELLOW)Missing:$$missing$(RESET)\n"; \
-		if [ "$$IS_WSL" = "true" ] && echo "$$missing" | grep -q "docker"; then \
-			printf "\n$(YELLOW)══════════════════════════════════════════════════════$(RESET)\n"; \
-			printf "$(YELLOW)  WSL detected: two options for Docker$(RESET)\n"; \
-			printf "$(YELLOW)══════════════════════════════════════════════════════$(RESET)\n"; \
-			printf "$(BLUE)  Option A (recommended):$(RESET)\n"; \
-			printf "    Install Docker Desktop on Windows and enable\n"; \
-			printf "    'Use the WSL 2 based engine' in Settings.\n\n"; \
-			printf "$(BLUE)  Option B (native Docker in WSL):$(RESET)\n"; \
-			printf "    Continue and Docker will be installed inside WSL.\n"; \
-			printf "    You will need to start the daemon manually:\n"; \
-			printf "      sudo dockerd &\n\n"; \
-		fi; \
-		case "$$PKG_MANAGER" in \
-			apt) \
-				printf "$(YELLOW)Installing via apt...$(RESET)\n"; \
-				sudo apt-get update -qq; \
-				sudo apt-get install -y --no-install-recommends \
-					docker.io docker-compose-v2 openssl ca-certificates curl;; \
-			pacman) \
-				printf "$(YELLOW)Installing via pacman...$(RESET)\n"; \
-				sudo pacman -Sy --needed --noconfirm \
-					docker docker-compose docker-buildx openssl;; \
-			dnf) \
-				printf "$(YELLOW)Installing via dnf...$(RESET)\n"; \
-				sudo dnf install -y docker docker-compose-plugin openssl;; \
-			*) \
-				printf "$(RED)Cannot install automatically on: $$DISTRO$(RESET)\n"; \
-				printf "$(RED)Install manually:$$missing$(RESET)\n"; \
-				exit 1;; \
-		esac; \
-		printf "$(GREEN)Packages installed$(RESET)\n"; \
-	else \
-		printf "$(GREEN)All dependencies present$(RESET)\n"; \
-	fi; \
-	\
-	if ! groups 2>/dev/null | grep -qw docker; then \
-		printf "$(YELLOW)Your user is not in the 'docker' group.$(RESET)\n"; \
-		printf "$(YELLOW)Run the following then LOG OUT and back in:$(RESET)\n"; \
-		printf "$(BLUE)  sudo usermod -aG docker $$USER$(RESET)\n"; \
-	else \
-		printf "$(GREEN)User in docker group$(RESET)\n"; \
-	fi
-	@if ! docker info >/dev/null 2>&1; then \
-		printf "$(YELLOW)Docker daemon not running. Starting...$(RESET)\n"; \
-		if command -v systemctl >/dev/null 2>&1; then \
-			sudo systemctl enable docker 2>/dev/null || true; \
-			sudo systemctl start docker 2>/dev/null; \
-		else \
-			sudo service docker start 2>/dev/null || true; \
-		fi; \
-		sleep 2; \
-		if ! docker info >/dev/null 2>&1; then \
-			printf "$(RED)Could not start Docker. Try manually:$(RESET)\n"; \
-			printf "$(RED)  sudo systemctl start docker$(RESET)\n"; \
-			exit 1; \
-		fi; \
-		printf "$(GREEN)Docker daemon started and enabled$(RESET)\n"; \
-	else \
-		printf "$(GREEN)Docker daemon running$(RESET)\n"; \
-	fi
-	@if ! docker compose version >/dev/null 2>&1; then \
-		printf "$(RED)'docker compose' not available after install.$(RESET)\n"; \
-		exit 1; \
-	fi
-	@printf "$(GREEN)═══ System ready ═══$(RESET)\n"
-
-# ── Initial setup ──────────────────────────────────────────────────
+# ── Initial setup: .env + SSL certs ─────────────────────────────────
+# Creates srcs/.env from the example if missing, syncs new keys from the
+# example, injects the host UID/GID, makes the directus bind-mount dirs
+# and generates the self-signed certificate when absent. Idempotent.
 setup:
-	@if [ ! -f .env ]; then \
-		cp .env.example .env; \
-		printf "$(YELLOW).env created from .env.example — review the values$(RESET)\n"; \
+	@if [ ! -f $(SRCS)/.env ]; then \
+		cp $(SRCS)/.env.example $(SRCS)/.env; \
+		printf "$(YELLOW)$(SRCS)/.env created from .env.example — review the values$(RESET)\n"; \
+	else \
+		while IFS= read -r line; do \
+			case "$$line" in ''|\#*) continue;; \
+				*=*) key=$${line%%=*}; \
+					grep -q "^$$key=" $(SRCS)/.env 2>/dev/null || printf "%s\n" "$$line" >> $(SRCS)/.env;; \
+			esac; \
+		done < $(SRCS)/.env.example; \
 	fi
-	@if [ ! -f nginx/ssl/selfsigned.crt ]; then \
+	@CURRENT_UID=$$(id -u); CURRENT_GID=$$(id -g); \
+	sed -i "s/^UID=.*/UID=$$CURRENT_UID/" $(SRCS)/.env; \
+	sed -i "s/^GID=.*/GID=$$CURRENT_GID/" $(SRCS)/.env
+	@mkdir -p $(SRCS)/requirements/directus/extensions $(SRCS)/requirements/directus/snapshots
+	@mkdir -p $(SRCS)/requirements/nginx/ssl
+	@CRT=$(SRCS)/requirements/nginx/ssl/selfsigned.crt; \
+	KEY=$(SRCS)/requirements/nginx/ssl/selfsigned.key; \
+	if [ ! -s "$$CRT" ] || [ ! -s "$$KEY" ] || ! openssl x509 -in "$$CRT" -noout >/dev/null 2>&1; then \
 		printf "$(YELLOW)Generating self-signed SSL certificate...$(RESET)\n"; \
-		mkdir -p nginx/ssl; \
+		rm -f "$$CRT" "$$KEY"; \
 		openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-			-keyout nginx/ssl/selfsigned.key \
-			-out nginx/ssl/selfsigned.crt \
-			-subj "/C=ES/ST=Madrid/L=Madrid/O=ft_transcendence/CN=localhost" \
-			2>/dev/null; \
+			-keyout "$$KEY" -out "$$CRT" \
+			-subj "/C=ES/ST=Madrid/L=Madrid/O=YogaPlatform/CN=localhost" >/dev/null 2>&1; \
 		printf "$(GREEN)SSL certificate generated$(RESET)\n"; \
 	fi
+	@printf "$(GREEN)Setup complete$(RESET)\n"
 
-# ── Docker Compose ─────────────────────────────────────────────────
-build:
+# ── Build images ────────────────────────────────────────────────────
+build: setup
 	@printf "$(BLUE)Building images...$(RESET)\n"
-	docker compose build
+	$(COMPOSE) build
 
-up:
+# ── Lifecycle ───────────────────────────────────────────────────────
+up: setup
 	@printf "$(GREEN)Starting $(NAME)...$(RESET)\n"
-	docker compose up -d
+	$(COMPOSE) up -d
 
 down:
 	@printf "$(RED)Stopping $(NAME)...$(RESET)\n"
-	docker compose down
+	$(COMPOSE) down
 
 restart: down up
 
-# ── Logs ───────────────────────────────────────────────────────────
+status:
+	$(COMPOSE) ps
+
+# ── Logs ────────────────────────────────────────────────────────────
 logs:
-	docker compose logs -f
+	$(COMPOSE) logs -f
 
-logs-nginx:
-	docker compose logs -f nginx
+logs-fullstack:
+	$(COMPOSE) logs -f fullstack
 
-logs-app:
-	docker compose logs -f fullstack
+# ── Database ────────────────────────────────────────────────────────
+# `make seed`  → editorial catalogue only (modules, classes, tags, faqs).
+# `make test`  → demo + tester accounts on top of the catalogue.
+# Both are idempotent.
+seed:
+	@printf "$(BLUE)Seeding default catalogue...$(RESET)\n"
+	$(COMPOSE) exec fullstack npx prisma db seed
+	@printf "$(GREEN)Seed complete$(RESET)\n"
 
-logs-db:
-	docker compose logs -f db
+test:
+	@printf "$(BLUE)Inserting QA test users...$(RESET)\n"
+	$(COMPOSE) exec fullstack npm run test:users
+	@printf "$(GREEN)Test users ready$(RESET)\n"
 
-logs-redis:
-	docker compose logs -f redis
+# ── Production preview (no nginx, no SSL) ───────────────────────────
+# Spawns a one-off fullstack container that builds the Nitro bundle and
+# serves it on host port 3000, bypassing nginx and TLS termination
+# entirely. The dev fullstack container is stopped first so the build
+# volumes are not contended. Resume the normal stack with `make up`
+# once you are done.
+# Hit http://localhost:3000.
+preview:
+	@printf "$(YELLOW)Stopping dev fullstack (port 3000 needs to be free)...$(RESET)\n"
+	@$(COMPOSE) stop fullstack >/dev/null 2>&1 || true
+	@printf "$(BLUE)Building production bundle + serving on http://localhost:3000$(RESET)\n"
+	@printf "$(BLUE)Press Ctrl-C to stop, then run `make up` to resume normal stack.$(RESET)\n"
+	$(COMPOSE) run --rm --service-ports --publish 3000:3000 \
+		--entrypoint sh fullstack \
+		-c 'npm run build && exec node .output/server/index.mjs'
 
-logs-directus:
-	docker compose logs -f directus
+# ── Health & Vimeo smoke check (IV.9 DevOps healthcheck) ────────────
+# The fullstack container exposes /api/health and /api/status. The
+# Vimeo proxy is wrapped so that a missing token returns 503 and a
+# non-existent video returns 404 — neither crashes the app. Run this
+# target to verify the platform is responsive even with no Vimeo
+# content uploaded.
+vimeo-check:
+	@printf "$(BLUE)═══ Healthcheck (IV.9 DevOps) ═══$(RESET)\n"
+	@HEALTH=$$($(COMPOSE) exec -T fullstack curl -fsS http://localhost:3000/api/health 2>/dev/null); \
+	if echo "$$HEALTH" | grep -qE '"status"[[:space:]]*:[[:space:]]*"ok"'; then \
+		printf "$(GREEN)✓ /api/health OK$(RESET)  → $$HEALTH\n"; \
+	else \
+		printf "$(RED)✗ /api/health failed$(RESET)\n"; exit 1; \
+	fi
+	@printf "$(BLUE)Probing Vimeo proxy with non-existent video id 999999999...$(RESET)\n"
+	@CODE=$$($(COMPOSE) exec -T fullstack curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/api/videos/999999999/embed); \
+	case "$$CODE" in \
+		404) printf "$(GREEN)✓ Vimeo proxy answered 404 (video not found) — handled gracefully$(RESET)\n";; \
+		503) printf "$(GREEN)✓ Vimeo proxy answered 503 (token not configured) — handled gracefully$(RESET)\n";; \
+		400) printf "$(GREEN)✓ Vimeo proxy answered 400 — handled gracefully$(RESET)\n";; \
+		*)   printf "$(RED)✗ Unexpected response code: $$CODE$(RESET)\n"; exit 1;; \
+	esac
+	@printf "$(GREEN)═══ Healthcheck OK ═══$(RESET)\n"
 
-# ── Cleanup ────────────────────────────────────────────────────────
+# ── Public API smoke test (IV.1 Major) ──────────────────────────────
+# Reads API_KEY from srcs/.env and exercises POST /api/v1/reviews:
+#   1) sin header        → 401
+#   2) header incorrecto → 401
+#   3) header correcto   → 201
+# Falla si alguno de los códigos no es el esperado. No depende del
+# host: las tres llamadas se hacen desde dentro del contenedor nginx.
+api:
+	@printf "$(BLUE)═══ Public API smoke test (POST /api/v1/reviews) ═══$(RESET)\n"
+	@API_KEY=$$(grep -E '^API_KEY=' $(SRCS)/.env | cut -d= -f2-); \
+	if [ -z "$$API_KEY" ]; then \
+		printf "$(RED)✗ API_KEY no configurada en $(SRCS)/.env$(RESET)\n"; exit 1; \
+	fi; \
+	HTTPS_PORT=$$(grep -E '^NGINX_HTTPS_PORT=' $(SRCS)/.env | cut -d= -f2); \
+	HTTPS_PORT=$${HTTPS_PORT:-443}; \
+	BASE="https://localhost:$$HTTPS_PORT/api/v1/reviews"; \
+	PAYLOAD='{"locale":"es_es","name":"smoke","title":"smoke","imageUrl":"https://example.com/x.png","description":"smoke"}'; \
+	printf "$(BLUE)→ Sin X-API-Key (esperado 401)...$(RESET)\n"; \
+	CODE=$$(curl -k -s -o /dev/null -w '%{http_code}' -X POST "$$BASE" -H 'Content-Type: application/json' -d "$$PAYLOAD"); \
+	if [ "$$CODE" = "401" ]; then printf "$(GREEN)  ✓ 401$(RESET)\n"; else printf "$(RED)  ✗ esperado 401, obtenido $$CODE$(RESET)\n"; exit 1; fi; \
+	printf "$(BLUE)→ X-API-Key incorrecta (esperado 401)...$(RESET)\n"; \
+	CODE=$$(curl -k -s -o /dev/null -w '%{http_code}' -X POST "$$BASE" -H 'Content-Type: application/json' -H 'X-API-Key: wrong' -d "$$PAYLOAD"); \
+	if [ "$$CODE" = "401" ]; then printf "$(GREEN)  ✓ 401$(RESET)\n"; else printf "$(RED)  ✗ esperado 401, obtenido $$CODE$(RESET)\n"; exit 1; fi; \
+	printf "$(BLUE)→ X-API-Key correcta (esperado 201)...$(RESET)\n"; \
+	CODE=$$(curl -k -s -o /dev/null -w '%{http_code}' -X POST "$$BASE" -H 'Content-Type: application/json' -H "X-API-Key: $$API_KEY" -d "$$PAYLOAD"); \
+	if [ "$$CODE" = "201" ]; then printf "$(GREEN)  ✓ 201$(RESET)\n"; else printf "$(RED)  ✗ esperado 201, obtenido $$CODE$(RESET)\n"; exit 1; fi; \
+	printf "$(GREEN)═══ Public API OK ═══$(RESET)\n"
+
+# ── Directus schema (version-controlled CMS model) ──────────────────
+directus-snapshot:
+	@printf "$(BLUE)Saving Directus schema snapshot...$(RESET)\n"
+	$(COMPOSE) exec directus npx directus schema snapshot --yes ./snapshots/schema.yaml
+	@printf "$(GREEN)Snapshot saved to srcs/requirements/directus/snapshots/schema.yaml$(RESET)\n"
+
+directus-apply:
+	@printf "$(YELLOW)Applying Directus schema snapshot...$(RESET)\n"
+	$(COMPOSE) exec directus npx directus schema apply --yes ./snapshots/schema.yaml
+	@printf "$(GREEN)Schema applied$(RESET)\n"
+
+# ── shell-db ────────────────────────────────────────────────────────
+shell-db:
+	$(COMPOSE) exec db psql -U $${POSTGRES_USER:-yoga_dev} -d $${POSTGRES_DB:-yoga_dev}
+
+# ── Cleanup ─────────────────────────────────────────────────────────
 clean: down
 	@printf "$(RED)Removing volumes...$(RESET)\n"
-	docker compose down -v
+	$(COMPOSE) down -v
 
 fclean: clean
 	@printf "$(RED)Removing images...$(RESET)\n"
@@ -191,54 +210,6 @@ fclean: clean
 
 re: fclean all
 
-# ── Status ─────────────────────────────────────────────────────────
-status:
-	docker compose ps
-
-# ── Development utilities ──────────────────────────────────────────
-shell-app:
-	docker compose exec fullstack sh
-
-shell-db:
-	docker compose exec db psql -U $${POSTGRES_USER:-transcendence_dev} -d $${POSTGRES_DB:-transcendence_dev}
-
-shell-redis:
-	docker compose exec redis redis-cli
-
-shell-directus:
-	docker compose exec directus sh
-
-# Prisma database migrations
-prisma-migrate:
-	docker compose exec fullstack npx prisma migrate dev
-
-prisma-studio:
-	@printf "$(YELLOW)Prisma Studio at http://localhost:5555$(RESET)\n"
-	docker compose exec fullstack npx prisma studio
-
-# ── Help ───────────────────────────────────────────────────────────
-help:
-	@printf "$(BLUE)═══ ft_transcendence — Commands ═══$(RESET)\n"
-	@printf "  $(GREEN)make all$(RESET)             First-time setup: deps → SSL → build → up\n"
-	@printf "  $(GREEN)make setup$(RESET)           Create .env + generate SSL certs\n"
-	@printf "  $(GREEN)make up$(RESET)              Start all services\n"
-	@printf "  $(GREEN)make down$(RESET)            Stop all services\n"
-	@printf "  $(GREEN)make restart$(RESET)         Restart all services\n"
-	@printf "  $(GREEN)make clean$(RESET)           Stop + remove volumes (wipes DB)\n"
-	@printf "  $(GREEN)make re$(RESET)              Full rebuild from scratch\n"
-	@printf "  $(BLUE)make logs$(RESET)            All service logs\n"
-	@printf "  $(BLUE)make logs-app$(RESET)         Fullstack (Nuxt) logs\n"
-	@printf "  $(BLUE)make logs-nginx$(RESET)       Nginx logs\n"
-	@printf "  $(BLUE)make logs-directus$(RESET)    Directus CMS logs\n"
-	@printf "  $(YELLOW)make shell-app$(RESET)       Shell in fullstack container\n"
-	@printf "  $(YELLOW)make shell-db$(RESET)        PostgreSQL psql\n"
-	@printf "  $(YELLOW)make shell-directus$(RESET)  Shell in Directus container\n"
-	@printf "  $(YELLOW)make prisma-migrate$(RESET)  Run Prisma migrations\n"
-	@printf "  $(YELLOW)make prisma-studio$(RESET)   Prisma Studio (localhost:5555)\n"
-	@printf "  $(YELLOW)make status$(RESET)          Show running containers\n"
-
-.PHONY: all deps setup build up down restart \
-        logs logs-nginx logs-app logs-db logs-redis logs-directus \
-        clean fclean re status help \
-        shell-app shell-db shell-redis shell-directus \
-        prisma-migrate prisma-studio
+.PHONY: all setup build up down restart status \
+        logs logs-fullstack seed test preview vimeo-check api \
+        directus-snapshot directus-apply clean fclean re
